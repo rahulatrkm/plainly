@@ -85,7 +85,10 @@ RESUME_SYS = (
     "Rules: never invent experience the person does not have — suggest how to phrase "
     "what they DO have. Prefer measurable, active phrasing. Be encouraging but honest; "
     "if it's a weak match, say so and explain what would close the gap.\n"
-    "CRITICAL: output ONLY the JSON object; start with { and end with }."
+    "CRITICAL: output ONE single JSON object containing ALL of the keys above "
+    "(match_score, verdict, missing_keywords, strengths, gaps, ats_issues, "
+    "rewrite_suggestions, summary_line). Do not output a fragment or a single item. "
+    "Start with { and end with }."
 )
 
 
@@ -148,7 +151,7 @@ def _extract_json(text):
     return None
 
 
-def _call(system, user):
+def _call(system, user, required=()):
     messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
     for attempt in range(3):
         body = {"model": MODEL, "temperature": 0.1 if attempt else 0.2,
@@ -167,7 +170,8 @@ def _call(system, user):
         content = msg.get("content") or msg.get("reasoning") or ""
         parsed = _extract_json(content)
         if isinstance(parsed, dict) and len(parsed) >= 2:
-            return parsed
+            if not required or any(k in parsed for k in required):
+                return parsed
     raise ValueError("The AI had trouble with that. Please try again in a moment.")
 
 
@@ -243,7 +247,8 @@ def application(environ, start_response):
         user = (f"JOB DESCRIPTION:\n{job[:6000] or '(none provided — assess the CV generally)'}\n\n"
                 f"CANDIDATE CV/RESUME:\n{cv[:MAX_CHARS]}")
         try:
-            return _json(start_response, "200 OK", _call(RESUME_SYS, user))
+            return _json(start_response, "200 OK",
+                         _call(RESUME_SYS, user, required=("match_score", "verdict")))
         except ValueError as e:
             return _json(start_response, "502 Bad Gateway", {"error": str(e)})
         except urllib.error.HTTPError:
