@@ -1,0 +1,13 @@
+# Render.com free-tier deploy for Plainly.
+# In Render: New > Blueprint > connect this repo. Free, auto-deploys on push.
+services:
+  - type: web
+    name: plainly
+    runtime: python
+    plan: free
+    buildCommand: "pip install gunicorn"
+    startCommand: "gunicorn --bind 0.0.0.0:$PORT --timeout 120 app:app"
+    healthCheckPath: /healthz
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12"
