@@ -9,7 +9,7 @@ It also includes **RealCheck** — paste a claim, message or headline and get a
 calm, reasoned "how to think about whether this is true", with the scam/
 misinformation red flags called out.
 
-👉 **Live:** deploy on Render (free) — see below.
+👉 **Live:** https://plainly-n6ni.onrender.com
 
 ## Why it exists
 
