@@ -92,6 +92,50 @@ RESUME_SYS = (
 )
 
 
+INTERVIEW_SYS = (
+    "You are a demanding but fair senior interviewer running a live practice job "
+    "interview. You ask ONE question at a time, listen to the candidate's answer, "
+    "grade it honestly, and then ask a natural follow-up — exactly like a real "
+    "interviewer would. You probe weak or vague answers rather than moving on "
+    "politely.\n\n"
+    "Return STRICT JSON ONLY (no markdown) with this shape:\n"
+    "{\n"
+    '  "feedback": {                 // omit entirely for the FIRST question\n'
+    '    "score": number,            // 0-10 for the answer just given\n'
+    '    "verdict": string,          // one honest sentence\n'
+    '    "did_well": [string],\n'
+    '    "improve": [string],        // specific, actionable\n'
+    '    "model_answer": string      // a strong version of THEIR answer, reusing their own facts\n'
+    "  },\n"
+    '  "question": string,           // the next question to ask (a real follow-up if their answer was thin)\n'
+    '  "question_intent": string     // one short line: what a real interviewer is testing here\n'
+    "}\n\n"
+    "Rules: be specific to what they actually said — never generic. If an answer is "
+    "vague, has no measurable result, or dodges the question, say so plainly and "
+    "score it low. Reward concrete situation-action-result structure. Never invent "
+    "achievements for the candidate; the model answer must only reshape facts they "
+    "gave. Keep every field tight and readable.\n"
+    "CRITICAL: output ONE single JSON object. Start with { and end with }."
+)
+
+DEBRIEF_SYS = (
+    "You are a senior interviewer writing the final debrief after a practice "
+    "interview. Be honest and useful — this person wants to actually get the job.\n\n"
+    "Return STRICT JSON ONLY with this shape:\n"
+    "{\n"
+    '  "overall_score": number,        // 0-100\n'
+    '  "verdict": string,              // would this performance pass a real screen? one honest sentence\n'
+    '  "strengths": [string],\n'
+    '  "weaknesses": [string],\n'
+    '  "patterns": [string],           // habits across answers (rambling, no numbers, hedging...)\n'
+    '  "practice_next": [string],      // what to drill before the real thing\n'
+    '  "likely_next_questions": [string]  // questions they should prepare for this role\n'
+    "}\n\n"
+    "Judge the whole transcript, not one answer. Be direct about whether this would "
+    "pass. CRITICAL: output ONE single JSON object. Start with { and end with }."
+)
+
+
 def _cors(h):
     return h + [("Access-Control-Allow-Origin", "*"),
                 ("Access-Control-Allow-Methods", "POST, GET, OPTIONS"),
@@ -249,6 +293,65 @@ def application(environ, start_response):
         try:
             return _json(start_response, "200 OK",
                          _call(RESUME_SYS, user, required=("match_score", "verdict")))
+        except ValueError as e:
+            return _json(start_response, "502 Bad Gateway", {"error": str(e)})
+        except urllib.error.HTTPError:
+            return _json(start_response, "429 Too Many Requests",
+                         {"error": "The free AI is busy. Try again in a minute."})
+        except Exception:
+            return _json(start_response, "504 Gateway Timeout", {"error": "The AI took too long."})
+
+    if method == "POST" and path == "/api/interview":
+        p = _read(environ)
+        if not p:
+            return _json(start_response, "400 Bad Request", {"error": "Missing interview details."})
+        role = (p.get("role") or "").strip()[:200]
+        level = (p.get("level") or "mid").strip()[:60]
+        style = (p.get("style") or "mixed").strip()[:60]
+        history = p.get("history") or []
+        if not role:
+            return _json(start_response, "400 Bad Request", {"error": "Tell me the role you're interviewing for."})
+        if not isinstance(history, list) or len(history) > 30:
+            return _json(start_response, "400 Bad Request", {"error": "Invalid session."})
+
+        lines = [f"ROLE: {role}", f"SENIORITY: {level}", f"INTERVIEW STYLE: {style}", ""]
+        if history:
+            lines.append("TRANSCRIPT SO FAR:")
+            for turn in history[-8:]:
+                q = str(turn.get("q", ""))[:1200]
+                a = str(turn.get("a", ""))[:4000]
+                lines.append(f"Interviewer: {q}")
+                lines.append(f"Candidate: {a}")
+            lines.append("")
+            lines.append("Grade the candidate's LAST answer, then ask the next question.")
+        else:
+            lines.append("Start the interview. Ask the first question. Do not include feedback.")
+        try:
+            return _json(start_response, "200 OK",
+                         _call(INTERVIEW_SYS, "\n".join(lines), required=("question",)))
+        except ValueError as e:
+            return _json(start_response, "502 Bad Gateway", {"error": str(e)})
+        except urllib.error.HTTPError:
+            return _json(start_response, "429 Too Many Requests",
+                         {"error": "The free AI is busy. Try again in a minute."})
+        except Exception:
+            return _json(start_response, "504 Gateway Timeout", {"error": "The AI took too long."})
+
+    if method == "POST" and path == "/api/debrief":
+        p = _read(environ)
+        if not p:
+            return _json(start_response, "400 Bad Request", {"error": "Missing session."})
+        role = (p.get("role") or "").strip()[:200]
+        history = p.get("history") or []
+        if not isinstance(history, list) or not history:
+            return _json(start_response, "400 Bad Request", {"error": "Answer at least one question first."})
+        lines = [f"ROLE: {role}", f"SENIORITY: {p.get('level', 'mid')}", "", "FULL TRANSCRIPT:"]
+        for turn in history[:20]:
+            lines.append(f"Interviewer: {str(turn.get('q',''))[:1200]}")
+            lines.append(f"Candidate: {str(turn.get('a',''))[:4000]}")
+        try:
+            return _json(start_response, "200 OK",
+                         _call(DEBRIEF_SYS, "\n".join(lines), required=("overall_score", "verdict")))
         except ValueError as e:
             return _json(start_response, "502 Bad Gateway", {"error": str(e)})
         except urllib.error.HTTPError:
