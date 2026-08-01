@@ -66,6 +66,29 @@ CHECK_SYS = (
 )
 
 
+RESUME_SYS = (
+    "You are ResumeFit, an assistant that tells a job seeker — honestly and "
+    "practically — how well their CV/résumé matches a specific job, and how to "
+    "improve it. Many applications are filtered by keyword-matching software (ATS) "
+    "before a human ever reads them, so be concrete about wording.\n\n"
+    "Return STRICT JSON ONLY (no markdown) with this shape:\n"
+    "{\n"
+    '  "match_score": number,              // 0-100 how well the CV fits this job\n'
+    '  "verdict": string,                  // one short honest sentence\n'
+    '  "missing_keywords": [string],       // important terms in the job ad absent from the CV\n'
+    '  "strengths": [string],              // what genuinely lines up well\n'
+    '  "gaps": [{"issue":string,"fix":string}],   // real gaps + how to address them\n'
+    '  "ats_issues": [string],             // formatting/wording that machines or recruiters trip on\n'
+    '  "rewrite_suggestions": [{"before":string,"after":string}], // stronger bullet rewrites\n'
+    '  "summary_line": string              // a tailored professional summary they could use\n'
+    "}\n\n"
+    "Rules: never invent experience the person does not have — suggest how to phrase "
+    "what they DO have. Prefer measurable, active phrasing. Be encouraging but honest; "
+    "if it's a weak match, say so and explain what would close the gap.\n"
+    "CRITICAL: output ONLY the JSON object; start with { and end with }."
+)
+
+
 def _cors(h):
     return h + [("Access-Control-Allow-Origin", "*"),
                 ("Access-Control-Allow-Methods", "POST, GET, OPTIONS"),
@@ -200,6 +223,27 @@ def application(environ, start_response):
             return _json(start_response, "400 Bad Request", {"error": "That's too short to check."})
         try:
             return _json(start_response, "200 OK", _call(CHECK_SYS, f"Analyse this claim:\n\n{claim[:MAX_CHARS]}"))
+        except ValueError as e:
+            return _json(start_response, "502 Bad Gateway", {"error": str(e)})
+        except urllib.error.HTTPError:
+            return _json(start_response, "429 Too Many Requests",
+                         {"error": "The free AI is busy. Try again in a minute."})
+        except Exception:
+            return _json(start_response, "504 Gateway Timeout", {"error": "The AI took too long."})
+
+    if method == "POST" and path == "/api/resume":
+        p = _read(environ)
+        if not p:
+            return _json(start_response, "400 Bad Request", {"error": "Please paste your CV."})
+        cv = (p.get("resume") or "").strip()
+        job = (p.get("job") or "").strip()
+        if len(cv) < 60:
+            return _json(start_response, "400 Bad Request",
+                         {"error": "Paste more of your CV so it can be assessed properly."})
+        user = (f"JOB DESCRIPTION:\n{job[:6000] or '(none provided — assess the CV generally)'}\n\n"
+                f"CANDIDATE CV/RESUME:\n{cv[:MAX_CHARS]}")
+        try:
+            return _json(start_response, "200 OK", _call(RESUME_SYS, user))
         except ValueError as e:
             return _json(start_response, "502 Bad Gateway", {"error": str(e)})
         except urllib.error.HTTPError:
