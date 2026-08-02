@@ -1,0 +1,6 @@
+# Free to use and meant to be found.
+User-agent: *
+Allow: /
+Disallow: /api/
+
+Sitemap: https://plainly-n6ni.onrender.com/sitemap.xml

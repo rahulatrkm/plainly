@@ -441,6 +441,7 @@ def application(environ, start_response):
                          else "application/json" if rel.endswith(".json")
                          else "image/png" if rel.endswith(".png")
                          else "image/svg+xml" if rel.endswith(".svg")
+                         else "application/xml" if rel.endswith(".xml")
                          else "text/plain; charset=utf-8")
                 data = fp.read_bytes()
                 start_response("200 OK", _cors([("Content-Type", ctype),
