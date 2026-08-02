@@ -136,6 +136,60 @@ DEBRIEF_SYS = (
 )
 
 
+def _stream_llm(system: str, user: str):
+    """Yield raw content deltas from the gateway as they arrive."""
+    body = {
+        "model": MODEL, "temperature": 0.15, "max_tokens": 4000, "stream": True,
+        "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
+    }
+    req = urllib.request.Request(
+        GATEWAY, data=json.dumps(body).encode(), method="POST",
+        headers={"Content-Type": "application/json", "Accept": "text/event-stream",
+                 "User-Agent": "plainly/1.0"})
+    with urllib.request.urlopen(req, timeout=120) as resp:
+        for raw in resp:
+            line = raw.decode("utf-8", "replace").strip()
+            if not line.startswith("data:"):
+                continue
+            payload = line[5:].strip()
+            if payload == "[DONE]":
+                return
+            try:
+                chunk = json.loads(payload)
+            except json.JSONDecodeError:
+                continue
+            delta = (chunk.get("choices") or [{}])[0].get("delta", {}) or {}
+            piece = delta.get("content") or delta.get("reasoning")
+            if piece:
+                yield piece
+
+
+def _sse(start_response, system: str, user: str):
+    """Proxy the model stream to the browser as Server-Sent Events."""
+    headers = _cors([
+        ("Content-Type", "text/event-stream; charset=utf-8"),
+        ("Cache-Control", "no-cache, no-transform"),
+        ("X-Accel-Buffering", "no"),
+    ])
+    start_response("200 OK", headers)
+
+    def generate():
+        buffer = []
+        try:
+            for piece in _stream_llm(system, user):
+                buffer.append(piece)
+                yield b"data: " + json.dumps({"delta": piece}).encode() + b"\n\n"
+        except Exception as exc:
+            yield b"data: " + json.dumps({"error": str(exc)[:200]}).encode() + b"\n\n"
+            return
+        text = "".join(buffer)
+        text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+        parsed = _extract_json(text)
+        yield b"data: " + json.dumps({"done": True, "result": parsed}).encode() + b"\n\n"
+
+    return generate()
+
+
 def _cors(h):
     return h + [("Access-Control-Allow-Origin", "*"),
                 ("Access-Control-Allow-Methods", "POST, GET, OPTIONS"),
@@ -359,6 +413,20 @@ def application(environ, start_response):
                          {"error": "The free AI is busy. Try again in a minute."})
         except Exception:
             return _json(start_response, "504 Gateway Timeout", {"error": "The AI took too long."})
+
+    if method == "POST" and path in ("/api/explain/stream", "/api/check/stream"):
+        p = _read(environ)
+        if not p:
+            return _json(start_response, "400 Bad Request", {"error": "Please paste some text."})
+        text = (p.get("text") or "").strip()
+        if len(text) < 10:
+            return _json(start_response, "400 Bad Request", {"error": "That's too short."})
+        if path.startswith("/api/explain"):
+            user = (f"Reading level: {(p.get('level') or 'simple').strip()}. "
+                    f"Language: {(p.get('language') or 'English').strip()}.\n\n"
+                    f"Explain this in plain language:\n\n{text[:MAX_CHARS]}")
+            return _sse(start_response, EXPLAIN_SYS, user)
+        return _sse(start_response, CHECK_SYS, f"Analyse this claim:\n\n{text[:MAX_CHARS]}")
 
     if path == "/healthz":
         return _json(start_response, "200 OK", {"status": "ok"})
