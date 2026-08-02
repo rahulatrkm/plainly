@@ -439,6 +439,8 @@ def application(environ, start_response):
             if fp.exists() and fp.is_file():
                 ctype = ("text/html; charset=utf-8" if rel.endswith(".html")
                          else "application/json" if rel.endswith(".json")
+                         else "image/png" if rel.endswith(".png")
+                         else "image/svg+xml" if rel.endswith(".svg")
                          else "text/plain; charset=utf-8")
                 data = fp.read_bytes()
                 start_response("200 OK", _cors([("Content-Type", ctype),
