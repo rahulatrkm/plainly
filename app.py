@@ -11,11 +11,15 @@ Serves the static frontends from web/. No secrets, no storage. Pure stdlib.
 """
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
 import re
+import socket
 import urllib.error
+import urllib.parse
 import urllib.request
+from html.parser import HTMLParser
 from pathlib import Path
 
 _WEB = Path(__file__).resolve().parent / "web"
@@ -89,6 +93,59 @@ RESUME_SYS = (
     "(match_score, verdict, missing_keywords, strengths, gaps, ats_issues, "
     "rewrite_suggestions, summary_line). Do not output a fragment or a single item. "
     "Start with { and end with }."
+)
+
+
+HR_SYS = (
+    "You apply the published scoring rubric from interviewstreet/hiring-agent — the "
+    "resume-ranking tool HackerRank open-sourced under MIT, widely (and wrongly) "
+    "described as 'HackerRank's ATS'. It was built to rank tens of thousands of "
+    "software intern applications so humans know which to read first.\n\n"
+    "Score the resume in FOUR categories, to these maximums, exactly as the rubric "
+    "defines them:\n"
+    "  open_source (0-35): contributions to OTHER people's projects. Popular projects "
+    "(1000+ stars), significant contributions or Google Summer of Code score 25-35. "
+    "Smaller projects or an active GitHub with real contributions elsewhere score 15-24. "
+    "CRITICAL: personal repositories are NOT open source contribution — if everything is "
+    "the candidate's own project, this score MUST be 10 or less. Hacktoberfest alone is 3-5. "
+    "No GitHub presence at all is 0-4.\n"
+    "  self_projects (0-30): complex work with real-world impact, several technologies or "
+    "real users scores 20-30. Moderate complexity with good documentation scores 10-19. "
+    "Tutorial-grade work — todo lists, calculators, basic CRUD, weather apps, classroom "
+    "assignments — scores 1-9. Projects with no link score 30-50% lower; a working live "
+    "demo scores 10-20% higher.\n"
+    "  production (0-25): real employment, internships and production contributions. Give "
+    "extra weight to founder, co-founder or early-employee roles at startups.\n"
+    "  technical_skills (0-10): breadth and evidence of problem-solving in projects, work "
+    "or competitions.\n\n"
+    "bonus_points (max 20 total): +5 Google Summer of Code, +3 Girl Script Summer of Code "
+    "(a DIFFERENT programme — never abbreviate it as GSoC), +3-5 startup founder, +2-3 "
+    "early-stage engineer, +2 portfolio site, +1 LinkedIn, +1-3 strong technical blog.\n"
+    "deductions: -2 to -5 if the projects are all tutorial-grade; -1 to -3 for each extra "
+    "simple project; -1 for generic names like 'Calculator' or 'Todo App'; -3 to -5 for each "
+    "project with no link at all.\n\n"
+    "FAIRNESS — scores must NEVER depend on the candidate's name, gender, demographics, "
+    "university, GPA or location. Judge only technical skills, project complexity and impact, "
+    "open source work, production experience and technical communication.\n\n"
+    "Return STRICT JSON ONLY (no markdown), exactly this shape and nothing else:\n"
+    "{\n"
+    '  "scores": {\n'
+    '    "open_source":     {"score": 0, "max": 35, "evidence": string},\n'
+    '    "self_projects":   {"score": 0, "max": 30, "evidence": string},\n'
+    '    "production":      {"score": 0, "max": 25, "evidence": string},\n'
+    '    "technical_skills":{"score": 0, "max": 10, "evidence": string}\n'
+    "  },\n"
+    '  "bonus_points": {"total": 0, "breakdown": string},\n'
+    '  "deductions": {"total": 0, "reasons": string},\n'
+    '  "key_strengths": [string],          // 1-5 items\n'
+    '  "areas_for_improvement": [string],  // 1-3 items\n'
+    '  "verdict": string                   // one honest sentence about where this lands\n'
+    "}\n\n"
+    "Every evidence field must be non-empty and must cite something actually in the resume. "
+    "No category may exceed its maximum, bonus may not exceed 20, and you must fill all four "
+    "categories. Judge only from the resume text given — you cannot see their GitHub, so say "
+    "so in the evidence when open-source activity cannot be confirmed.\n"
+    "CRITICAL: output ONE single JSON object. Start with { and end with }."
 )
 
 
@@ -286,6 +343,173 @@ def _read(environ):
         return None
 
 
+class _Text(HTMLParser):
+    """Body text, with the furniture removed and JSON-LD job postings kept."""
+
+    SKIP = {"script", "style", "nav", "footer", "header", "aside", "svg", "noscript", "form", "button"}
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.parts: list[str] = []
+        self.ld: list[str] = []
+        self._skip = 0
+        self._ld = False
+
+    def handle_starttag(self, tag, attrs):
+        if tag in self.SKIP:
+            self._skip += 1
+        if tag == "script" and dict(attrs).get("type", "").lower() == "application/ld+json":
+            self._ld = True
+        if tag in ("p", "li", "br", "div", "h1", "h2", "h3", "h4", "tr"):
+            self.parts.append("\n")
+        if tag == "li":
+            self.parts.append("- ")
+
+    def handle_endtag(self, tag):
+        if tag in self.SKIP and self._skip:
+            self._skip -= 1
+        if tag == "script":
+            self._ld = False
+
+    def handle_data(self, data):
+        if self._ld:
+            self.ld.append(data)
+        elif not self._skip:
+            self.parts.append(data)
+
+
+def _job_description_from_ld(chunks):
+    """Most real job boards publish a schema.org JobPosting. It is far cleaner
+    than anything scraped out of the page body, so it is preferred when present."""
+    for raw in chunks:
+        try:
+            data = json.loads(raw)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        stack = [data]
+        while stack:
+            node = stack.pop()
+            if isinstance(node, list):
+                stack.extend(node)
+            elif isinstance(node, dict):
+                types = node.get("@type")
+                types = types if isinstance(types, list) else [types]
+                if "JobPosting" in types:
+                    bits = [node.get("title") or "", node.get("description") or ""]
+                    text = "\n".join(b for b in bits if b)
+                    if text.strip():
+                        return text
+                stack.extend(v for v in node.values() if isinstance(v, (dict, list)))
+    return ""
+
+
+def _guard_url(url: str) -> urllib.parse.ParseResult:
+    """Refuse anything that is not a public web page.
+
+    This endpoint fetches a URL chosen by the caller, which is a server-side
+    request forgery hole if left open: without these checks anyone could point
+    it at 169.254.169.254 and read the host's cloud credentials, or sweep the
+    private network behind it. Every hop of every redirect goes through here.
+    """
+    try:
+        u = urllib.parse.urlparse(url)
+    except ValueError:
+        raise ValueError("That doesn't look like a web address.")
+    if u.scheme not in ("http", "https") or not u.hostname:
+        raise ValueError("Only http and https links can be read.")
+    if u.port is not None and u.port not in (80, 443):
+        raise ValueError("Only standard web ports can be read.")
+    try:
+        infos = socket.getaddrinfo(u.hostname, u.port or (443 if u.scheme == "https" else 80))
+    except socket.gaierror:
+        raise ValueError("That address could not be found.")
+    for info in infos:
+        ip = ipaddress.ip_address(info[4][0])
+        if not ip.is_global or ip.is_multicast:
+            raise ValueError("That address is not reachable from here.")
+    return u
+
+
+_MAX_PAGE = 1_500_000
+
+
+def _fetch_job(url: str) -> tuple[str, str]:
+    """Fetch a job ad and return (text, host). Redirects are followed by hand so
+    each new location is checked as strictly as the first."""
+    seen = 0
+    while True:
+        u = _guard_url(url)
+        req = urllib.request.Request(url, method="GET", headers={
+            # Presented honestly. Boards that do not want to be read this way
+            # will refuse, and the front end tells the user to paste instead.
+            "User-Agent": "Mozilla/5.0 (compatible; ResumeFit/1.0; +https://rahulatrkm.github.io/resumefit/)",
+            "Accept": "text/html,application/xhtml+xml,text/plain;q=0.9",
+            "Accept-Language": "en",
+        })
+        opener = urllib.request.build_opener(_NoRedirect)
+        try:
+            resp = opener.open(req, timeout=20)
+        except urllib.error.HTTPError as exc:
+            if exc.code in (301, 302, 303, 307, 308) and seen < 4:
+                nxt = exc.headers.get("Location")
+                if not nxt:
+                    raise ValueError("That page redirected somewhere unreadable.")
+                url = urllib.parse.urljoin(url, nxt)
+                seen += 1
+                continue
+            if exc.code in (401, 403):
+                raise ValueError("That site refused the request — it wants a signed-in browser.")
+            if exc.code == 404:
+                raise ValueError("That page was not found.")
+            raise ValueError("That site returned an error.")
+        except (urllib.error.URLError, socket.timeout, OSError):
+            raise ValueError("Couldn't reach that page.")
+
+        with resp:
+            ctype = (resp.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+            if ctype and not (ctype.startswith("text/") or ctype in ("application/xhtml+xml", "application/json")):
+                raise ValueError("That link isn't a web page.")
+            raw = resp.read(_MAX_PAGE)
+            charset = "utf-8"
+            match = re.search(r"charset=([\w-]+)", resp.headers.get("Content-Type") or "", re.I)
+            if match:
+                charset = match.group(1)
+            try:
+                body = raw.decode(charset, "replace")
+            except LookupError:
+                body = raw.decode("utf-8", "replace")
+
+        parser = _Text()
+        try:
+            parser.feed(body)
+        except Exception:  # a broken page should not take the endpoint down
+            pass
+        text = _job_description_from_ld(parser.ld)
+        if len(text.strip()) < 200:
+            text = "".join(parser.parts)
+        # The JobPosting description is itself HTML more often than not.
+        if "<" in text and ">" in text:
+            inner = _Text()
+            try:
+                inner.feed(text)
+                text = "".join(inner.parts)
+            except Exception:
+                pass
+        text = re.sub(r"[ \t\u00a0]+", " ", text)
+        text = re.sub(r"\n\s*\n\s*\n+", "\n\n", text)
+        text = "\n".join(line.strip() for line in text.splitlines()).strip()
+        if len(text) < 120:
+            raise ValueError("That page had almost no readable text — it is probably rendered by JavaScript.")
+        return text[:12000], u.hostname or ""
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Redirects are handled in _fetch_job so every hop is re-checked."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
 def application(environ, start_response):
     method = environ.get("REQUEST_METHOD", "GET")
     path = environ.get("PATH_INFO", "/")
@@ -354,6 +578,42 @@ def application(environ, start_response):
                          {"error": "The free AI is busy. Try again in a minute."})
         except Exception:
             return _json(start_response, "504 Gateway Timeout", {"error": "The AI took too long."})
+
+    if method == "POST" and path == "/api/resume-hr":
+        p = _read(environ)
+        if not p:
+            return _json(start_response, "400 Bad Request", {"error": "Please paste your CV."})
+        cv = (p.get("resume") or "").strip()
+        if len(cv) < 60:
+            return _json(start_response, "400 Bad Request",
+                         {"error": "Paste more of your CV so it can be assessed properly."})
+        # The rubric scores a candidate, not a match, so the job ad is not sent:
+        # passing it would only invite the model to quietly grade the fit instead.
+        try:
+            return _json(start_response, "200 OK",
+                         _call(HR_SYS, f"Resume to evaluate:\n\n{cv[:MAX_CHARS]}", required=("scores",)))
+        except ValueError as e:
+            return _json(start_response, "502 Bad Gateway", {"error": str(e)})
+        except urllib.error.HTTPError:
+            return _json(start_response, "429 Too Many Requests",
+                         {"error": "The free AI is busy. Try again in a minute."})
+        except Exception:
+            return _json(start_response, "504 Gateway Timeout", {"error": "The AI took too long."})
+
+    if method == "POST" and path == "/api/job":
+        p = _read(environ)
+        if not p:
+            return _json(start_response, "400 Bad Request", {"error": "No link given."})
+        url = (p.get("url") or "").strip()
+        if not url:
+            return _json(start_response, "400 Bad Request", {"error": "No link given."})
+        try:
+            text, host = _fetch_job(url)
+            return _json(start_response, "200 OK", {"text": text, "host": host})
+        except ValueError as e:
+            return _json(start_response, "400 Bad Request", {"error": str(e)})
+        except Exception:
+            return _json(start_response, "502 Bad Gateway", {"error": "Couldn't read that page."})
 
     if method == "POST" and path == "/api/interview":
         p = _read(environ)
