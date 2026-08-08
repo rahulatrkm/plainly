@@ -16,6 +16,7 @@ import json
 import os
 import re
 import socket
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -293,19 +294,33 @@ def _extract_json(text):
 
 
 def _call(system, user, required=()):
+    """Ask the model for JSON, retrying within a budget that fits the worker.
+
+    gunicorn kills a worker at 120 seconds. Three attempts at ninety seconds
+    each could ask for two hundred and seventy, so a slow spell upstream got the
+    worker killed mid-request and Render served its own HTML error page instead
+    of anything this code could explain. Attempts now share one deadline and
+    stop while there is still time to answer.
+    """
     messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
+    deadline = time.monotonic() + 100
     for attempt in range(3):
+        left = deadline - time.monotonic()
+        if left < 12:
+            break
         body = {"model": MODEL, "temperature": 0.1 if attempt else 0.2,
                 "max_tokens": 4000, "messages": messages}
         req = urllib.request.Request(
             GATEWAY, data=json.dumps(body).encode(), method="POST",
             headers={"Content-Type": "application/json", "User-Agent": "plainly/1.0"})
         try:
-            with urllib.request.urlopen(req, timeout=90) as r:
+            with urllib.request.urlopen(req, timeout=min(55, left)) as r:
                 data = json.loads(r.read().decode())
         except urllib.error.HTTPError as exc:
             if exc.code == 429:
                 raise
+            continue
+        except Exception:
             continue
         msg = (data.get("choices") or [{}])[0].get("message", {})
         content = msg.get("content") or msg.get("reasoning") or ""
