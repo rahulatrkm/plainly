@@ -97,54 +97,40 @@ RESUME_SYS = (
 
 
 HR_SYS = (
-    "You apply the published scoring rubric from interviewstreet/hiring-agent — the "
-    "resume-ranking tool HackerRank open-sourced under MIT, widely (and wrongly) "
-    "described as 'HackerRank's ATS'. It was built to rank tens of thousands of "
-    "software intern applications so humans know which to read first.\n\n"
-    "Score the resume in FOUR categories, to these maximums, exactly as the rubric "
-    "defines them:\n"
+    "You score a CV using the published rubric from interviewstreet/hiring-agent, "
+    "the resume-ranking tool HackerRank open-sourced. Score four categories:\n"
     "  open_source (0-35): contributions to OTHER people's projects. Popular projects "
-    "(1000+ stars), significant contributions or Google Summer of Code score 25-35. "
-    "Smaller projects or an active GitHub with real contributions elsewhere score 15-24. "
-    "CRITICAL: personal repositories are NOT open source contribution — if everything is "
-    "the candidate's own project, this score MUST be 10 or less. Hacktoberfest alone is 3-5. "
-    "No GitHub presence at all is 0-4.\n"
-    "  self_projects (0-30): complex work with real-world impact, several technologies or "
-    "real users scores 20-30. Moderate complexity with good documentation scores 10-19. "
-    "Tutorial-grade work — todo lists, calculators, basic CRUD, weather apps, classroom "
-    "assignments — scores 1-9. Projects with no link score 30-50% lower; a working live "
-    "demo scores 10-20% higher.\n"
-    "  production (0-25): real employment, internships and production contributions. Give "
-    "extra weight to founder, co-founder or early-employee roles at startups.\n"
-    "  technical_skills (0-10): breadth and evidence of problem-solving in projects, work "
-    "or competitions.\n\n"
-    "bonus_points (max 20 total): +5 Google Summer of Code, +3 Girl Script Summer of Code "
-    "(a DIFFERENT programme — never abbreviate it as GSoC), +3-5 startup founder, +2-3 "
-    "early-stage engineer, +2 portfolio site, +1 LinkedIn, +1-3 strong technical blog.\n"
-    "deductions: -2 to -5 if the projects are all tutorial-grade; -1 to -3 for each extra "
-    "simple project; -1 for generic names like 'Calculator' or 'Todo App'; -3 to -5 for each "
-    "project with no link at all.\n\n"
-    "FAIRNESS — scores must NEVER depend on the candidate's name, gender, demographics, "
-    "university, GPA or location. Judge only technical skills, project complexity and impact, "
-    "open source work, production experience and technical communication.\n\n"
-    "Return STRICT JSON ONLY (no markdown), exactly this shape and nothing else:\n"
+    "or Google Summer of Code: 25-35. Smaller real contributions: 15-24. IMPORTANT: the "
+    "candidate's own repositories are NOT open source — if every project is their own, "
+    "this MUST be 10 or less. No GitHub at all: 0-4.\n"
+    "  self_projects (0-30): complex work with real impact: 20-30. Moderate: 10-19. "
+    "Tutorial-grade (todo app, calculator, CRUD, weather app, classwork): 1-9. "
+    "Projects with no link score much lower.\n"
+    "  production (0-25): real jobs, internships, production work. Founders and early "
+    "startup employees score higher.\n"
+    "  technical_skills (0-10): breadth and evidence of problem-solving.\n"
+    "Bonus (max 20): +5 GSoC, +3-5 founder, +2-3 early startup employee, +2 portfolio "
+    "site, +1 LinkedIn. Deductions: tutorial-only projects, generic project names, "
+    "projects with no link.\n"
+    "Never let the score depend on name, gender, university, GPA or location.\n"
+    "You only have the resume text — you cannot see their GitHub. Say so in the evidence "
+    "where it matters.\n\n"
+    "Return STRICT JSON ONLY (no markdown, no reasoning, no preamble) with this shape:\n"
     "{\n"
     '  "scores": {\n'
-    '    "open_source":     {"score": 0, "max": 35, "evidence": string},\n'
-    '    "self_projects":   {"score": 0, "max": 30, "evidence": string},\n'
-    '    "production":      {"score": 0, "max": 25, "evidence": string},\n'
-    '    "technical_skills":{"score": 0, "max": 10, "evidence": string}\n'
+    '    "open_source":      {"score": 0, "max": 35, "evidence": string},\n'
+    '    "self_projects":    {"score": 0, "max": 30, "evidence": string},\n'
+    '    "production":       {"score": 0, "max": 25, "evidence": string},\n'
+    '    "technical_skills": {"score": 0, "max": 10, "evidence": string}\n'
     "  },\n"
     '  "bonus_points": {"total": 0, "breakdown": string},\n'
     '  "deductions": {"total": 0, "reasons": string},\n'
-    '  "key_strengths": [string],          // 1-5 items\n'
-    '  "areas_for_improvement": [string],  // 1-3 items\n'
-    '  "verdict": string                   // one honest sentence about where this lands\n'
+    '  "key_strengths": [string],\n'
+    '  "areas_for_improvement": [string],\n'
+    '  "verdict": string\n'
     "}\n\n"
-    "Every evidence field must be non-empty and must cite something actually in the resume. "
-    "No category may exceed its maximum, bonus may not exceed 20, and you must fill all four "
-    "categories. Judge only from the resume text given — you cannot see their GitHub, so say "
-    "so in the evidence when open-source activity cannot be confirmed.\n"
+    "Fill all four categories, keep each within its maximum, and give non-empty evidence "
+    "for each. Do NOT explain your reasoning or think out loud. "
     "CRITICAL: output ONE single JSON object. Start with { and end with }."
 )
 
